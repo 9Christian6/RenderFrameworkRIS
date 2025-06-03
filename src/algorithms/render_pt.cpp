@@ -7,100 +7,135 @@
 #include "../renderer.h"
 
 /// Path Tracing with MIS and Russian Roulette.
-class PathTracingRenderer : public Renderer {
+class PathTracingRenderer : public Renderer
+{
 public:
-    PathTracingRenderer(const Scene& scene, size_t max_path_len)
+    PathTracingRenderer(const Scene &scene, size_t max_path_len)
         : Renderer(scene), max_path_len(max_path_len)
-    {}
+    {
+    }
 
     std::string name() const override { return "pt"; }
 
     void reset() override { iter = 1; }
 
-    void render(Image& img) override {
+    void render(Image &img) override
+    {
         auto kx = 2.0f / (img.width - 1);
         auto ky = 2.0f / (img.height - 1);
 
         process_tiles(0, 0, img.width, img.height,
-            default_tile_width, default_tile_height,
-            [&] (size_t xmin, size_t ymin, size_t xmax, size_t ymax) {
-            UniformSampler sampler(sampler_seed(xmin ^ ymin, iter));
-            for (size_t y = ymin; y < ymax; y++) {
-                for (size_t x = xmin; x < xmax; x++) {
-                    auto ray = scene.camera->gen_ray(
-                        (x + sampler()) * kx - 1.0f,
-                        1.0f - (y + sampler()) * ky);
+                      default_tile_width, default_tile_height,
+                      [&](size_t xmin, size_t ymin, size_t xmax, size_t ymax)
+                      {
+                          UniformSampler sampler(sampler_seed(xmin ^ ymin, iter));
+                          for (size_t y = ymin; y < ymax; y++)
+                          {
+                              for (size_t x = xmin; x < xmax; x++)
+                              {
+                                  auto ray = scene.camera->gen_ray(
+                                      (x + sampler()) * kx - 1.0f,
+                                      1.0f - (y + sampler()) * ky);
 
-                    debug_raster(x, y);
-                    img(x, y) += rgba(path_trace(ray, sampler), 1.0f);
-                }
-            }
-        });
+                                  debug_raster(x, y);
+                                  img(x, y) += rgba(path_trace(ray, sampler), 1.0f);
+                              }
+                          }
+                      });
         iter++;
     }
 
-    inline rgb path_trace(Ray ray, Sampler& sampler);
+    inline rgb path_trace(Ray ray, Sampler &sampler);
 
 private:
     size_t max_path_len;
     size_t iter;
 };
 
-rgb PathTracingRenderer::path_trace(Ray ray, Sampler& sampler) {
+rgb PathTracingRenderer::path_trace(Ray ray, Sampler &sampler)
+{
     rgb color(0.0f);
+    rgb throughput(1.0f);
 
     ray.tmin = offset;
-    for (size_t path_len = 0; path_len < max_path_len; path_len++) {
+    for (size_t path_len = 0; path_len < max_path_len; path_len++)
+    {
         Hit hit = scene.intersect(ray);
-        if (hit.tri < 0) break;
+        if (hit.tri < 0)
+            break;
 
         auto surf = scene.surface_params(ray, hit);
         auto mat = scene.material(hit);
         auto out = -ray.dir;
-
-        if (auto light = mat.emitter) {
+        if (auto light = mat.emitter)
+        {
             // Direct hits on a light source
-            if (surf.entering) {
-                // DONE: compute the incoming radiance from the emitter.
-		color = mat.emitter->emission(ray.dir, hit.u, hit.v).intensity;
-		mat.bsdf->sample(sampler, surf, out);
+            if (surf.entering)
+            {
+                auto light_sample = light->emission(out, hit.u, hit.v);
+                color += throughput * light_sample.intensity;
             }
         }
+
         // Materials without BSDFs act like black bodies
-        if (!mat.bsdf) break;
+        if (!mat.bsdf)
+            break;
 
         bool specular = mat.bsdf->type() == Bsdf::Type::Specular;
 
-        // TODO: Evaluate direct lighting
-        // When using Next Event Estimation, you should select a light in the scene
-        // (uniformly, for now) and compute direct illumination from it.
-        // Important notes:
-        //   - Weight the contribution of one light with the probability of choosing that light,
-        //   - Be careful when combining Next Event Estimation with BRDF sampling (see assignment),
-        //   - Do not take lights that face away the surface at the hit point into account.
+        // Evaluate direct lighting using Next Event Estimation (NEE)
+        if (!specular && !scene.lights.empty())
+        {
+            // Randomly select a light source
+            size_t light_idx = size_t(sampler() * scene.lights.size());
+            float light_select_prob = 1.0f / scene.lights.size();
 
-        // TODO: Add Russian Roulette to prevent infinite recursion
+            // Sample direct illumination from the selected light
+            auto light_sample = scene.lights[light_idx]->sample_direct(surf.point, sampler);
+            auto light_dir = normalize(light_sample.pos - surf.point);
+            float dist = length(light_sample.pos - surf.point);
 
-        // TODO:
-        // If the path is not terminated, sample a direction to continue the path with from the material.
-        // You can do this using the sample() function of the Bsdf class. Update the path weight, and do not
-        // forget to take the Russian Roulette probability into account!
+            // Check visibility
+            Ray shadow_ray(surf.point, light_dir, offset, dist - offset);
+            if (!scene.occluded(shadow_ray))
+            {
+                // Evaluate BSDF for the light direction
+                auto bsdf_val = mat.bsdf->eval(light_dir, surf, out);
+                float bsdf_pdf = mat.bsdf->pdf(light_dir, surf, out);
 
-        break; // TODO: Remove this
+                // Multiple Importance Sampling weight
+                float light_pdf = light_sample.pdf_area * dist * dist / std::abs(dot(light_dir, light_sample.pos - surf.point));
+                float mis_weight = light_pdf / (light_pdf + bsdf_pdf);
 
-        // General remarks:
-        //   - The algorithm is currently expressed in an iterative form.
-        //     If you do not feel confident with it, feel free to use a recursive form instead.
-        //   - Because this function is called in parallel, make sure you avoid data races.
-        //     Disable OpenMP if you are encountering any issue.
-        //   - The emission() function in the Light class is required to evaluate the radiance when hitting a light source.
-        //     Of all the fields in the EmissionValue structure, you will only need two: pdf_area (only for MIS) and intensity.
-        //   - The sample_direct() function in the Light class is required to evaluate direct illumination at a given point.
-        //     You will only need the pdf_area (only for MIS), cos, pos, and intensity fields.
+                // Add contribution
+                float cos_theta = std::abs(dot(light_dir, surf.coords.n));
+                color += throughput * bsdf_val * light_sample.intensity * mis_weight / (light_pdf * light_select_prob);
+            }
+        }
+
+        // Russian Roulette for path termination
+        if (path_len > 3)
+        {
+            float rr_prob = std::min(0.95f, std::max(throughput.x, std::max(throughput.y, throughput.z)));
+            if (sampler() > rr_prob)
+                break;
+            throughput = rgb(throughput.x / rr_prob, throughput.y / rr_prob, throughput.z / rr_prob);
+        }
+
+        // Sample new direction from BSDF
+        auto bsdf_sample = mat.bsdf->sample(sampler, surf, out);
+        if (bsdf_sample.pdf <= 0.0f)
+            break;
+
+        // Update throughput and ray
+        float cos_theta = std::abs(dot(bsdf_sample.in, surf.coords.n));
+        throughput *= bsdf_sample.color * cos_theta / bsdf_sample.pdf;
+        ray = Ray(surf.point, bsdf_sample.in, offset);
     }
     return color;
 }
 
-std::unique_ptr<Renderer> create_pt_renderer(const Scene& scene, size_t max_path_len) {
+std::unique_ptr<Renderer> create_pt_renderer(const Scene &scene, size_t max_path_len)
+{
     return std::unique_ptr<Renderer>(new PathTracingRenderer(scene, max_path_len));
 }
