@@ -72,8 +72,8 @@ rgb PathTracingRenderer::path_trace(Ray ray, Sampler &sampler)
             // Direct hits on a light source
             if (surf.entering)
             {
-                auto light_sample = light->emission(out, hit.u, hit.v);
-                color += throughput * light_sample.intensity;
+                auto light_emission = light->emission(out, hit.u, hit.v);
+                color += throughput * light_emission.intensity;
             }
         }
 
@@ -83,6 +83,7 @@ rgb PathTracingRenderer::path_trace(Ray ray, Sampler &sampler)
 
         bool specular = mat.bsdf->type() == Bsdf::Type::Specular;
 
+        float cos_theta = -3;
         // Evaluate direct lighting using Next Event Estimation (NEE)
         if (!specular && !scene.lights.empty())
         {
@@ -91,7 +92,8 @@ rgb PathTracingRenderer::path_trace(Ray ray, Sampler &sampler)
             float light_select_prob = 1.0f / scene.lights.size();
 
             // Sample direct illumination from the selected light
-            auto light_sample = scene.lights[light_idx]->sample_direct(surf.point, sampler);
+            auto light = scene.lights[light_idx].get();
+            auto light_sample = light->sample_direct(surf.point, sampler);
             auto light_dir = normalize(light_sample.pos - surf.point);
             float dist = length(light_sample.pos - surf.point);
 
@@ -104,12 +106,48 @@ rgb PathTracingRenderer::path_trace(Ray ray, Sampler &sampler)
                 float bsdf_pdf = mat.bsdf->pdf(light_dir, surf, out);
 
                 // Multiple Importance Sampling weight
-                float light_pdf = light_sample.pdf_area * dist * dist / std::abs(dot(light_dir, light_sample.pos - surf.point));
-                float mis_weight = light_pdf / (light_pdf + bsdf_pdf);
+                float light_pdf;
+                if (light->has_area())
+                {
+                    // For area lights, convert area PDF to solid angle PDF
+                    light_pdf = light_sample.pdf_area * dist * dist / light_sample.cos;
+                }
+                else
+                { // PointLight
+                    // For point lights, use directional PDF as solid angle PDF
+                    light_pdf = light_sample.pdf_dir;
+                }
+
+                //**float mis_weight = light_pdf / (light_pdf + bsdf_pdf);** replacing this with bellow
+
+                float sum_pdf = light_pdf + bsdf_pdf;
+                float w_ne, w_brdf;
+                if (sum_pdf > 0.0f)
+                {
+                    w_ne = light_pdf / sum_pdf;
+                    w_brdf = bsdf_pdf / sum_pdf;
+                }
+
+                else
+                {
+                    w_ne = 0.0f;
+                    w_brdf = 0.0f;
+                }
 
                 // Add contribution
-                float cos_theta = std::abs(dot(light_dir, surf.coords.n));
-                color += throughput * bsdf_val * light_sample.intensity * mis_weight / (light_pdf * light_select_prob);
+                cos_theta = std::abs(dot(light_dir, surf.coords.n));
+
+                rgb light_contribution = light_sample.intensity;
+                if (!light->has_area())
+                {
+                    // For point lights, radiance is intensity / (dist^2)
+                    light_contribution = light_contribution * (1.0f / (dist * dist));
+                }
+
+                // color += throughput * bsdf_val * light_contribution * mis_weight / (light_pdf * light_select_prob);
+                //**color += throughput * bsdf_val * light_contribution * cos_theta * mis_weight / (light_pdf * light_select_prob);**
+
+                color += throughput * bsdf_val * light_contribution * cos_theta * w_ne / (light_pdf * light_select_prob);
             }
         }
 
@@ -127,8 +165,9 @@ rgb PathTracingRenderer::path_trace(Ray ray, Sampler &sampler)
         if (bsdf_sample.pdf <= 0.0f)
             break;
 
+        cos_theta = std::abs(dot(bsdf_sample.in, surf.coords.n));
+
         // Update throughput and ray
-        float cos_theta = std::abs(dot(bsdf_sample.in, surf.coords.n));
         throughput *= bsdf_sample.color * cos_theta / bsdf_sample.pdf;
         ray = Ray(surf.point, bsdf_sample.in, offset);
     }
