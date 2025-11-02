@@ -1,5 +1,0 @@
-/home/christian/Documents/Uni/RIS/Assignments/Assignment03/build/CMakeFiles/edit_cache.dir
-/home/christian/Documents/Uni/RIS/Assignments/Assignment03/build/CMakeFiles/rebuild_cache.dir
-/home/christian/Documents/Uni/RIS/Assignments/Assignment03/build/src/CMakeFiles/arty.dir
-/home/christian/Documents/Uni/RIS/Assignments/Assignment03/build/src/CMakeFiles/edit_cache.dir
-/home/christian/Documents/Uni/RIS/Assignments/Assignment03/build/src/CMakeFiles/rebuild_cache.dir

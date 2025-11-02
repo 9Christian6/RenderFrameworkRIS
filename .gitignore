@@ -32,3 +32,8 @@
 
 # Build directories
 build/*
+vcpgk/*
+.cache
+.vscode
+*.exr
+debug.obj
