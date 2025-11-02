@@ -37,3 +37,4 @@ vcpgk/*
 .vscode
 *.exr
 debug.obj
+test
