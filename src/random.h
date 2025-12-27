@@ -61,7 +61,6 @@ inline float cosine_hemisphere_pdf(float c)
 {
     // TODO: "c" is the cosine of the direction.
     // You should return the corresponding pdf.
-    return 1.0f; // <--- This is probably incorrect
     return c / pi;
     return 1.0f; // <--- This is probably incorrect
 }

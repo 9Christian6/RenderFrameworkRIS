@@ -137,22 +137,16 @@ void PhotonMappingRenderer::trace_photons(std::vector<Photon> &photons, Sampler 
   // Choose a light to sample from (uniformly)
   size_t light_idx = size_t(sampler() * scene.lights.size()) % scene.lights.size();
   auto &light = scene.lights[light_idx];
-
-  // Get emission sample
+  float light_select_prob = 1.0f / scene.lights.size();
   EmissionSample emission = light->sample_emission(sampler);
-
-  // Create starting ray with offset to avoid self-intersection artifacts
   Ray ray(emission.pos, emission.dir, offset);
-
-  // Initialize throughput: start at 1, then multiply by emission intensity later
   rgb throughput = rgb(1.0f);
 
   // Compute total PDF for importance weighting:
   // - Area PDF (position on light)
   // - Direction PDF (direction from light)
   // - Uniform probability over lights
-  float total_light_pdf = emission.pdf_area * emission.pdf_dir * (1.0f / scene.lights.size());
-
+  float total_light_pdf = emission.pdf_area * emission.pdf_dir * light_select_prob;
   // Multiply throughput by emitted radiance (already includes any color/intensity)
   throughput *= emission.intensity / total_light_pdf;
 
@@ -161,7 +155,6 @@ void PhotonMappingRenderer::trace_photons(std::vector<Photon> &photons, Sampler 
     Hit hit = scene.intersect(ray);
     if (hit.tri < 0)
       break;
-
     auto mat = scene.material(hit);
     auto surf = scene.surface_params(ray, hit);
     auto out = -ray.dir;
@@ -171,37 +164,34 @@ void PhotonMappingRenderer::trace_photons(std::vector<Photon> &photons, Sampler 
 
     if (mat.bsdf->type() == Bsdf::Type::Glossy)
     {
-      size_t light_idx = size_t(sampler() * scene.lights.size());
-      float light_select_prob = 1.0f / scene.lights.size();
-      auto light = scene.lights[light_idx].get();
       auto ls = light->sample_direct(surf.point, sampler);
       auto wi = normalize(ls.pos - surf.point);
       float dist = length(ls.pos - surf.point);
-      if (dot(wi, surf.coords.n) > 0 && !scene.occluded(Ray(surf.point, wi, offset, dist - offset)))
+      //if (dot(wi, surf.coords.n) > 0 && !scene.occluded(Ray(surf.point, wi, offset, dist - offset)))
+      if (ls.cos > 0 && !scene.occluded(Ray(surf.point, wi, offset, dist - offset)))
       {
-	auto bsdf_val = mat.bsdf->eval(wi, surf, out);
+	// auto bsdf_val = mat.bsdf->eval(wi, surf, out);
 	// convert area to solid‐angle or use pdf_dir for point lights
-	float light_pdf = light->has_area()
-	  ? ls.pdf_area * dist * dist / ls.cos
-	  : ls.pdf_dir;
-	float cos_theta = std::abs(dot(wi, surf.face_normal));
-	rgb Li = ls.intensity;
-	if (!light->has_area())
-	  Li *= (1.0f / (dist * dist));
+	// The light pdf is wrong here
+	// float light_pdf = ls.pdf_dir;
+	// if (light->has_area()){
+	//   light_pdf = ls.pdf_area * dist * dist / ls.cos;
+	// }
+	// rgb Li = ls.intensity;
+	// if (!light->has_area())
+	//   Li *= (1.0f / (dist * dist));
+
 	// add the NEE contribution (no MIS here for simplicity)
-	throughput += throughput * bsdf_val * Li * cos_theta / (light_pdf * light_select_prob);
+	//throughput += throughput * bsdf_val * Li * ls.cos / (light_pdf * light_select_prob);
 	photons.push_back(Photon(throughput, surf, out));
       }
-
-      // (b) Now sample the glossy lobe and continue the eye path
-      {
-	auto bs = mat.bsdf->sample(sampler, surf, out);
-	if (bs.pdf <= 0.0f)
-	  break;
-	throughput *= bs.color / bs.pdf; // bs.color includes cosine
-	ray = Ray(surf.point, bs.in, offset);
-	continue;
-      }
+      // Now sample the glossy lobe and continue the eye path
+      auto bs = mat.bsdf->sample(sampler, surf, out);
+      if (bs.pdf <= 0.0f)
+	break;
+      throughput *= bs.color / bs.pdf; // bs.color includes cosine
+      ray = Ray(surf.point, bs.in, offset);
+      continue;
     }
 
     // Sample BSDF for next direction
@@ -323,8 +313,8 @@ rgb PhotonMappingRenderer::trace_eye_path(Ray ray, Sampler &sampler, size_t ligh
 	  accumulated += bsdf * p.contrib * k * cosTheta_p * norm;
 	  });
 
-	  lastBounceGlossy = false;
-	  return color + accumulated;
+      lastBounceGlossy = false;
+      return color + accumulated;
     }
 
     // Sample BSDF for next direction
